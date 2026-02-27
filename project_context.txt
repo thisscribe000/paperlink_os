@@ -1,0 +1,22 @@
+[
+  {
+    "description": "Phase 1: Solidify the Structured Storage Layer (The 'File System')",
+    "status": "completed"
+  },
+  {
+    "description": "Phase 2: Launch Static Site Deployment (The 'Web Server')",
+    "status": "completed"
+  },
+  {
+    "description": "Phase 3: Build a Developer Console (The 'Control Panel')",
+    "status": "completed"
+  },
+  {
+    "description": "3.1: CRUD Operations (List and Delete projects)",
+    "status": "completed"
+  },
+  {
+    "description": "Phase 4: Telegram Bot Integration (The 'Interface')",
+    "status": "in_progress"
+  }
+]
