@@ -1,84 +1,100 @@
-from http.server import BaseHTTPRequestHandler, HTTPServer
-import io
+import os
+import requests
+import urllib.parse
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from dotenv import load_dotenv
 from database import Database
-from zip_processor import ZipProcessor
 
-# Single persistent connection for speed
+# 1. INITIAL SETUP
+load_dotenv()
 db = Database()
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+ADMIN_ID = os.getenv("ADMIN_ID")
 
-class PaperLinkRequestHandler(BaseHTTPRequestHandler):
+# --- PASTE YOUR NEW GROUP LINK HERE ---
+SUCCESS_REDIRECT_URL = "https://t.me/PaperLinkBuilders" 
+
+class PaperLinkHandler(BaseHTTPRequestHandler):
     def do_POST(self):
-        """Handles ZIP uploads via Bot/Curl"""
         if self.path == '/submit-lead':
             content_length = int(self.headers['Content-Length'])
             post_data = self.rfile.read(content_length).decode('utf-8')
+            params = urllib.parse.parse_qs(post_data)
             
-            # Simple parsing: slug=waitlist&handle=@username
-            params = dict(x.split('=') for x in post_data.split('&'))
-            slug = params.get('slug')
-            handle = params.get('handle', '').replace('%40', '@') # Clean the @ symbol
+            slug = params.get('slug', [''])[0]
+            # Strip all @ symbols and force exactly one at the start
+            raw_handle = params.get('handle', [''])[0].replace('%40', '').strip('@')
+            clean_handle = f"@{raw_handle}" if raw_handle else "Anonymous"
             
-            if slug and handle:
-                db.cursor.execute("INSERT INTO leads (project_slug, telegram_handle) VALUES (?, ?)", (slug, handle))
+            if slug and raw_handle:
+                # Save Lead
+                db.cursor.execute("INSERT INTO leads (project_slug, telegram_handle) VALUES (?, ?)", (slug, clean_handle))
                 db.conn.commit()
                 
-                # Send back a success message
+                # Barraos Notification
+                msg = f"🚨 *Barraos Alert!*\nNew Collaborator: {clean_handle}\nProject: `{slug}`"
+                requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
+                             data={"chat_id": ADMIN_ID, "text": msg, "parse_mode": "Markdown"})
+                
+                # Instant Redirect
+                self.send_response(303)
+                self.send_header('Location', SUCCESS_REDIRECT_URL)
+                self.end_headers()
+
+    def do_GET(self):
+        try:
+            if self.path == '/' or self.path == '':
+                # Serve the Admin Dashboard
+                db.cursor.execute("SELECT name, slug FROM projects")
+                projects = db.cursor.fetchall()
+                db.cursor.execute("SELECT telegram_handle, project_slug, created_at FROM leads ORDER BY created_at DESC")
+                leads = db.cursor.fetchall()
+
+                p_rows = "".join([f"<li class='py-3 border-b flex justify-between items-center'><span class='font-medium'>{p['name']}</span><a href='/{p['slug']}/index.html' class='text-blue-600 font-bold'>Live Site</a></li>" for p in projects])
+                l_rows = "".join([f"<tr><td class='p-3 border-b'>{l['telegram_handle']}</td><td class='p-3 border-b'>{l['project_slug']}</td><td class='p-3 border-b opacity-40 text-xs'>{l['created_at']}</td></tr>" for l in leads])
+
                 self.send_response(200)
                 self.send_header('Content-type', 'text/html')
                 self.end_headers()
-                self.wfile.write(bytes("<h3>Success! See you in the community.</h3>", "utf-8"))
-            return
-        if self.path == '/upload':
-            content_length = int(self.headers['Content-Length'])
-            body = self.rfile.read(content_length)
-            processor = ZipProcessor()
-            # Default to 'Manual-Upload' for now
-            slug = processor.process_and_upload("Manual-Upload", 99, body)
-            if slug:
-                self.send_response(201); self.end_headers()
-                self.wfile.write(bytes(f"Deployed: {slug}", "utf8"))
-
-    def do_GET(self):
-        """Routes requests from the Cloudflare tunnel"""
-        try:
-            path = self.path
-            if path == '/favicon.ico':
-                self.send_response(404); self.end_headers(); return
-
-            # 1. SHOW DASHBOARD
-            if path == '/' or path == '':
-                db.cursor.execute("SELECT name, slug FROM projects")
-                projects = db.cursor.fetchall()
-                links = "".join([f"<li>{p['name']} - <a href='/{p['slug']}/index.html'>Visit</a></li>" for p in projects])
                 
-                self.send_response(200); self.send_header('Content-type', 'text/html'); self.end_headers()
-                self.wfile.write(bytes(f"<h1>🚀 PaperLink Console</h1><ul>{links}</ul>", "utf8"))
+                html = f"""
+                <html>
+                <head><script src="https://cdn.tailwindcss.com"></script></head>
+                <body class="bg-white p-10 font-sans">
+                    <div class="max-w-5xl mx-auto">
+                        <header class="mb-12"><h1 class="text-5xl font-black italic tracking-tighter uppercase">PaperLink OS</h1></header>
+                        <div class="grid md:grid-cols-2 gap-10">
+                            <div class="bg-gray-50 p-8 rounded-[2rem] border">
+                                <h2 class="text-xl font-bold mb-6">Active Pulses</h2><ul class="divide-y">{p_rows}</ul>
+                            </div>
+                            <div class="bg-gray-50 p-8 rounded-[2rem] border">
+                                <h2 class="text-xl font-bold mb-6">Collaborators</h2>
+                                <table class="w-full text-left text-sm"><tbody>{l_rows}</tbody></table>
+                            </div>
+                        </div>
+                    </div>
+                </body>
+                </html>
+                """
+                self.wfile.write(html.encode('utf-8'))
                 return
 
-            # 2. ROUTE FOLDER-STYLE PATHS (e.g., /my-slug/index.html)
-            parts = path.strip('/').split('/')
-            if len(parts) >= 1:
-                slug = parts[0]
-                # Default to index.html if just the slug is provided
-                requested_file = "/".join(parts[1:]) if len(parts) > 1 else 'index.html'
-
-                file_data = db.get_project_file(slug, requested_file)
+            parts = self.path.strip('/').split('/')
+            if len(parts) >= 2:
+                slug, file_path = parts[0], "/".join(parts[1:])
+                file_data = db.get_project_file(slug, file_path)
                 if file_data:
                     self.send_response(200)
                     self.send_header('Content-type', file_data['content_type'])
                     self.end_headers()
                     self.wfile.write(file_data['content'])
                     return
-
-            self.send_response(404); self.end_headers()
+            self.send_error(404)
         except Exception as e:
-            print(f"Error: {e}"); self.send_response(500); self.end_headers()
+            print(f"Server Error: {e}")
+            self.send_error(500)
 
-def run_server(port=8000):
-    server_address = ('', port)
-    httpd = HTTPServer(server_address, PaperLinkRequestHandler)
-    print(f"PaperLink Server live on port {port}...")
-    httpd.serve_forever()
-
-if __name__ == '__main__':
-    run_server()
+if __name__ == "__main__":
+    server = HTTPServer(('localhost', 8000), PaperLinkHandler)
+    print("🚀 PaperLink OS: Infrastructure Live on Barraos.")
+    server.serve_forever()
