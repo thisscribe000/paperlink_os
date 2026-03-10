@@ -43,9 +43,30 @@ def setup_database():
         );
     ''')
 
+    # --- TABLE 4: Project Configs (Phase 5 - Continuity Layer) ---
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS project_configs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_slug TEXT NOT NULL UNIQUE,
+            template_type TEXT NOT NULL,
+            config_json TEXT NOT NULL,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+    ''')
+
+    # --- TABLE 5: Leads ---
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS leads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_slug TEXT,
+            telegram_handle TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+    ''')
+
     conn.commit()
     conn.close()
-    print("Database 'paperlink.db' successfully initialized with Infrastructure & Hosting tables.")
+    print("Database 'paperlink.db' successfully initialized with Infrastructure, Hosting, and Continuity tables.")
 
 if __name__ == '__main__':
     setup_database()
