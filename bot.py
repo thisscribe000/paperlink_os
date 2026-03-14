@@ -2,167 +2,203 @@ import os
 import qrcode
 from dotenv import load_dotenv
 from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    ContextTypes,
-    MessageHandler,
-    CommandHandler,
-    ConversationHandler,
-    filters,
-)
-
+from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 from database import Database
-from pulse_generator import deploy_pulse_site
+from telegram import Update
+from telegram.ext import MessageHandler, filters
 
 load_dotenv()
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
-PUBLIC_URL = os.getenv("PUBLIC_URL")
-ADMIN_ID = os.getenv("ADMIN_ID")
+PUBLIC_URL = os.getenv("PUBLIC_URL", "http://localhost:8000")
+# Note: ADMIN_ID is now used for global broadcasts or maintenance, 
+# but not to block standard users from /pulse.
 
 db = Database()
+builder_sessions = {}
 
-BRAND_NAME, TAGLINE, HEADLINE, SUBHEADLINE, CTA_TEXT, CTA_LINK = range(6)
+def generate_pulse_html(title, headline, sub, about, contact_link, style="midnight"):
+    # --- YOUR ORIGINAL TAILWIND HTML GENERATOR (UNCHANGED) ---
+    slug = title.lower().replace(" ", "-").strip()
+    is_dark = style == "midnight"
+    bg, text, sub_t, card_bg, border = (
+        ("bg-black", "text-white", "text-gray-400", "bg-zinc-950", "border-zinc-800")
+        if is_dark else ("bg-white", "text-black", "text-gray-500", "bg-white", "border-zinc-200")
+    )
+    btn_bg, btn_t = (("bg-white", "text-black") if is_dark else ("bg-black", "text-white"))
+    input_bg = "bg-gray-900" if is_dark else "bg-gray-50"
+    telegram_href = f"https://t.me/{contact_link.strip('@')}" if contact_link.startswith("@") else contact_link
 
+    return f"""
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>{title}</title>
+        <script src="https://cdn.tailwindcss.com"></script>
+    </head>
+    <body class="{bg} {text} font-sans transition-all">
+        <div class="max-w-6xl mx-auto px-6 py-10">
+            <nav class="mb-16 font-black text-xl uppercase tracking-tighter">{title}</nav>
+            <section class="text-center py-16">
+                <h1 class="text-5xl md:text-7xl font-black tracking-tight mb-6">{headline}</h1>
+                <p class="text-xl md:text-2xl {sub_t} max-w-2xl mx-auto mb-12">{sub}</p>
+                <a href="{telegram_href}" class="{btn_bg} {btn_t} inline-block px-8 py-4 rounded-full font-bold text-lg">Message Us On Telegram</a>
+            </section>
+            <section class="py-16">
+                <div class="max-w-3xl mx-auto text-center">
+                    <p class="text-xs uppercase tracking-[0.25em] opacity-50 font-bold mb-4">About</p>
+                    <p class="text-lg md:text-xl {sub_t} leading-8">{about}</p>
+                </div>
+            </section>
+            <section class="py-16">
+                <div class="max-w-2xl mx-auto rounded-[2rem] border {border} {card_bg} p-10 text-center">
+                    <h2 class="text-3xl md:text-4xl font-black mb-4">Contact Us</h2>
+                    <p class="text-base {sub_t} mb-8">Send us a message directly on Telegram, or leave your handle and we'll reach out.</p>
+                    <a href="{telegram_href}" class="block {btn_bg} {btn_t} p-4 rounded-full font-bold mb-6">Message Us Now</a>
+                    <form action="/submit-lead" method="POST">
+                        <input type="hidden" name="slug" value="{slug}">
+                        <input type="text" name="handle" placeholder="Telegram Handle" required class="w-full p-4 {input_bg} border {border} rounded-full mb-4 text-center">
+                        <button class="w-full {btn_bg} {btn_t} p-4 rounded-full font-bold">Request a Reply</button>
+                    </form>
+                </div>
+            </section>
+        </div>
+    </body>
+    </html>
+    """
 
-def build_default_pulse_data(user_data: dict) -> dict:
-    brand_name = user_data["brand_name"]
-    slug = brand_name.lower().replace(" ", "-").strip()
-
-    return {
-        "BRAND_NAME": brand_name,
-        "TAGLINE": user_data["tagline"],
-        "HEADLINE": user_data["headline"],
-        "SUBHEADLINE": user_data["subheadline"],
-        "CTA_TEXT": user_data["cta_text"],
-        "SECONDARY_CTA_TEXT": "Collaborate",
-        "CTA_LINK": user_data["cta_link"],
-        "SECTION_TITLE": "A faster path from idea to launch",
-        "SECTION_BODY": f"{brand_name} helps you move from idea to launch faster with a clean Telegram-native workflow.",
-        "FEATURE_1_TITLE": "Fast to launch",
-        "FEATURE_1_BODY": "Move from concept to live page in minutes.",
-        "FEATURE_2_TITLE": "Telegram native",
-        "FEATURE_2_BODY": "Use the platform people already know and use every day.",
-        "FEATURE_3_TITLE": "Built for expansion",
-        "FEATURE_3_BODY": "Start with a page today and grow into a bigger system later.",
-        "CONTACT_TITLE": f"Connect with {brand_name}",
-        "CONTACT_BODY": "Drop your Telegram handle and we’ll reach out.",
-        "FORM_BUTTON_TEXT": "Get Started",
-        "PROJECT_SLUG": slug,
-    }
-
-
-async def pulse_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if str(update.message.from_user.id) != ADMIN_ID:
-        await update.message.reply_text("You are not authorized to use this command.")
-        return ConversationHandler.END
-
-    context.user_data.clear()
-    await update.message.reply_text("Let’s build your Pulse page.\n\nWhat is the brand name?")
-    return BRAND_NAME
-
-
-async def pulse_brand_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["brand_name"] = update.message.text.strip()
-    await update.message.reply_text("Nice. What is the tagline?")
-    return TAGLINE
-
-
-async def pulse_tagline(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["tagline"] = update.message.text.strip()
-    await update.message.reply_text("What is the main headline?")
-    return HEADLINE
-
-
-async def pulse_headline(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["headline"] = update.message.text.strip()
-    await update.message.reply_text("What is the subheadline?")
-    return SUBHEADLINE
-
-
-async def pulse_subheadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["subheadline"] = update.message.text.strip()
-    await update.message.reply_text("What should the main CTA button say?")
-    return CTA_TEXT
-
-
-async def pulse_cta_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["cta_text"] = update.message.text.strip()
-    await update.message.reply_text("What link should the CTA button open?")
-    return CTA_LINK
-
-
-async def pulse_cta_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["cta_link"] = update.message.text.strip()
-
-    data = build_default_pulse_data(context.user_data)
-    slug = deploy_pulse_site(data, owner_id=update.message.from_user.id)
-
-    if not slug:
-        await update.message.reply_text("Something went wrong while deploying the site.")
-        return ConversationHandler.END
-
-    base = PUBLIC_URL.rstrip("/") if PUBLIC_URL else "http://localhost:8000"
-    full_url = f"{base}/{slug}/index.html"
-
+async def send_qr_reply(update: Update, full_url: str, slug: str) -> None:
     qr = qrcode.QRCode(version=1, box_size=10, border=5)
-    qr.add_data(full_url)
-    qr.make(fit=True)
+    qr.add_data(full_url); qr.make(fit=True)
     img = qr.make_image(fill_color="black", back_color="white")
     qr_filename = f"{slug}_qr.png"
     img.save(qr_filename)
+    try:
+        with open(qr_filename, "rb") as photo:
+            await update.message.reply_photo(photo=photo, caption=f"🚀 *Pulse Live!*\n[Open Site]({full_url})", parse_mode="Markdown")
+    finally:
+        if os.path.exists(qr_filename): os.remove(qr_filename)
 
-    with open(qr_filename, "rb") as photo:
-        await update.message.reply_photo(
-            photo=photo,
-            caption=f"🚀 *Pulse Live!*\n{full_url}",
-            parse_mode="Markdown"
-        )
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text: return
+    text, user_id = update.message.text.strip(), update.message.from_user.id
 
-    os.remove(qr_filename)
-    context.user_data.clear()
-    return ConversationHandler.END
-
-
-async def pulse_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
-    await update.message.reply_text("Pulse creation cancelled.")
-    return ConversationHandler.END
-
-
-async def handle_text_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if str(update.message.from_user.id) != ADMIN_ID:
+    # --- 1. MY PROJECTS LIST ---
+    if text == "/myprojects":
+        projs = db.get_user_projects(user_id)
+        if not projs:
+            await update.message.reply_text("No projects yet. Type /pulse to build one!")
+            return
+        msg = "📂 *Your Active Links:*\n\n"
+        for p in projs:
+            msg += f"🔗 {p['name']}\n`{PUBLIC_URL}/{p['slug']}/index.html`\n\n"
+        await update.message.reply_text(msg, parse_mode="Markdown")
         return
 
-    text = update.message.text
+    # --- 2. GUIDED BUILDER (/pulse) ---
+    if text == "/pulse":
+        builder_sessions[user_id] = {"step": "title", "data": {}}
+        await update.message.reply_text("🚀 Let's build. What is the Name of the project?")
+        return
 
-    if text and text.startswith("Delete:"):
-        target = text.replace("Delete:", "").strip().lower()
-        deleted = db.delete_project(target)
-        if deleted:
-            await update.message.reply_text(f"🗑 Removed: {target}")
-        else:
-            await update.message.reply_text(f"Could not find project: {target}")
+    if user_id in builder_sessions:
+        session = builder_sessions[user_id]
+        step = session["step"]
+        if step == "title":
+            potential_slug = text.lower().replace(" ", "-").strip()
+            # SLUG CHECK
+            if db.get_project_owner(potential_slug):
+                await update.message.reply_text("⚠️ That name is taken. Try a different project name.")
+                return
+            session["data"]["title"], session["step"] = text, "headline"
+            await update.message.reply_text("Main Headline?")
+        elif step == "headline":
+            session["data"]["headline"], session["step"] = text, "sub"
+            await update.message.reply_text("Short Description?")
+        elif step == "sub":
+            session["data"]["sub"], session["step"] = text, "about"
+            await update.message.reply_text("About Text?")
+        elif step == "about":
+            session["data"]["about"], session["step"] = text, "contact"
+            await update.message.reply_text("Telegram @username or Link?")
+        elif step == "contact":
+            session["data"]["contact"], session["step"] = text, "style"
+            await update.message.reply_text("Style: midnight or light?")
+        elif step == "style":
+            style = text.lower() if text.lower() in ["midnight", "light"] else "midnight"
+            d = session["data"]
+            html = generate_pulse_html(d['title'], d['headline'], d['sub'], d['about'], d['contact'], style)
+            # Create
+            success, result = db.create_project(d['title'], user_id, {"index.html": html.encode("utf-8")})
+            if success:
+                db.save_project_config(result, {**d, "style": style})
+                await send_qr_reply(update, f"{PUBLIC_URL}/{result}/index.html", result)
+            else:
+                await update.message.reply_text(f"❌ Error: {result}")
+            del builder_sessions[user_id]
+        return
 
+    # --- 3. EDIT LOGIC (WITH OWNERSHIP CHECK) ---
+    if text.startswith("Edit:"):
+        parts = [p.strip() for p in text.replace("Edit:", "", 1).split("|")]
+        if len(parts) < 3:
+            await update.message.reply_text("Format: Edit: slug | field | value")
+            return
+        slug, field, new_val = parts[0].lower(), parts[1], parts[2]
+        
+        # OWNERSHIP CHECK
+        if db.get_project_owner(slug) != str(user_id):
+            await update.message.reply_text("🚫 Access Denied: This project belongs to someone else.")
+            return
 
-if __name__ == "__main__":
-    app = ApplicationBuilder().token(TOKEN).build()
+        config = db.get_project_config(slug)
+        if not config:
+            await update.message.reply_text("❌ Config error.")
+            return
 
-    pulse_handler = ConversationHandler(
-        entry_points=[CommandHandler("pulse", pulse_start)],
-        states={
-            BRAND_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, pulse_brand_name)],
-            TAGLINE: [MessageHandler(filters.TEXT & ~filters.COMMAND, pulse_tagline)],
-            HEADLINE: [MessageHandler(filters.TEXT & ~filters.COMMAND, pulse_headline)],
-            SUBHEADLINE: [MessageHandler(filters.TEXT & ~filters.COMMAND, pulse_subheadline)],
-            CTA_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, pulse_cta_text)],
-            CTA_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, pulse_cta_link)],
-        },
-        fallbacks=[CommandHandler("cancel", pulse_cancel)],
+        config[field] = new_val
+        new_html = generate_pulse_html(config['title'], config['headline'], config['sub'], config['about'], config['contact_link'] if 'contact_link' in config else config['contact'], config['style'])
+        db.update_project_file(slug, "index.html", new_html.encode("utf-8"))
+        db.save_project_config(slug, config)
+        await update.message.reply_text(f"✅ Updated {slug}!")
+        return
+
+    # --- 4. DELETE LOGIC (WITH OWNERSHIP CHECK) ---
+    if text.startswith("Delete:"):
+        target = text.replace("Delete:", "", 1).strip().lower()
+        if db.get_project_owner(target) != str(user_id):
+            await update.message.reply_text("🚫 You can only delete your own projects.")
+            return
+        db.delete_project(target)
+        await update.message.reply_text(f"🗑 Project '{target}' has been deleted.")
+        return
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    photo_file = await update.message.photo[-1].get_file()
+    
+    # Create an assets folder if it doesn't exist
+    if not os.path.exists("assets"):
+        os.makedirs("assets")
+        
+    file_name = f"assets/{photo_file.file_unique_id}.jpg"
+    await photo_file.download_to_drive(file_name)
+    
+    # Register in DB
+    asset_id = db.save_asset(user_id, photo_file.file_id, "image/jpeg", file_name)
+    
+    asset_url = f"{PUBLIC_URL}/{file_name}"
+    await update.message.reply_text(
+        f"✅ **Asset Saved to PaperLink OS**\n\n"
+        f"Asset ID: `{asset_id}`\n"
+        f"Public URL: {asset_url}\n\n"
+        "You can now use this URL in your Pulse pages or Store items.",
+        parse_mode="Markdown"
     )
 
-    app.add_handler(pulse_handler)
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_commands))
-
-    print("🤖 PaperLink bot is running...")
+if __name__ == '__main__':
+    app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(MessageHandler(filters.TEXT, handle_message))
+    print("🤖 PaperLink OS Bot Ready...")
     app.run_polling()
